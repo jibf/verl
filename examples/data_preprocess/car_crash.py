@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import random
+from glob import glob
 
 import datasets
 import pandas as pd
@@ -88,32 +89,18 @@ However, these track IDs may be inaccurate and should only be used as a referenc
 def parse_obj_id_ground_truth(obj_id_str: str) -> list[list[int]]:
     """
     Parse object ID ground truth string.
-
-    Format: "1;3/5;6" means:
-    - Split by ';' to get groups
-    - '3/5' means either 3 or 5 is correct
-    - No order requirement
-
-    Args:
-        obj_id_str: String like "1;3/5;6"
-
-    Returns:
-        List of acceptable ID groups, e.g., [[1], [3, 5], [6]]
+    Format: "1;3/5;6" -> [[1], [3, 5], [6]] (semicolon separates groups, slash means alternatives)
     """
     if not obj_id_str or obj_id_str == 'nan' or pd.isna(obj_id_str):
         return []
 
-    # Remove brackets if present
     obj_id_str = obj_id_str.strip('[]')
-
-    # Split by semicolon
     groups = obj_id_str.split(';')
 
     parsed_groups = []
     for group in groups:
         group = group.strip()
         if '/' in group:
-            # Multiple acceptable IDs
             ids = [int(x.strip()) for x in group.split('/') if x.strip().isdigit()]
             if ids:
                 parsed_groups.append(ids)
@@ -123,40 +110,24 @@ def parse_obj_id_ground_truth(obj_id_str: str) -> list[list[int]]:
     return parsed_groups
 
 
-def load_rule_base_results(sam_crash_detection_path: str, type_val: int, video_val: int) -> str:
-    """
-    Load rule-based crash detection results from SAM collision detection.
+def load_rule_base_results(rule_base_crash_detection_path: str, video_sub_dir: str) -> str:
+    """Load rule-based crash detection results from SAM collision detection."""
+    json_filename = f"test_{video_sub_dir}_sam_collisions.json"
+    json_path = os.path.join(rule_base_crash_detection_path, json_filename)
 
-    Args:
-        sam_crash_detection_path: Path to SAM crash detection directory
-        type_val: Type value (e.g., 7)
-        video_val: Video value (e.g., 3)
-
-    Returns:
-        Formatted string with rule-based detection results
-    """
-    # Construct the JSON file path: test_{type}_{video:03d}_sam_collisions.json
-    json_filename = f"test_{type_val}_{video_val:03d}_sam_collisions.json"
-    json_path = os.path.join(sam_crash_detection_path, json_filename)
-
-    # If file doesn't exist, return default message
     if not os.path.exists(json_path):
+        print("can not find rule base results")
         return "No rule-based detection results available."
 
     try:
-        # Load the JSON file
         with open(json_path, 'r') as f:
             data = json.load(f)
 
-        # Extract description field
         descriptions = data.get('description', [])
-
         if not descriptions:
             return "No rule-based detection results available."
 
-        # Format the descriptions into a readable string
-        formatted_result = "\n".join(descriptions)
-        return formatted_result
+        return "\n".join(descriptions)
 
     except Exception as e:
         print(f"Warning: Failed to load rule-based results from {json_path}: {e}")
@@ -165,94 +136,88 @@ def load_rule_base_results(sam_crash_detection_path: str, type_val: int, video_v
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--annotation_file",
-                        default="/data02/home/binfei/data/DADA/dada_car_crash_evaluation.xlsx",
-                        help="Path to the annotation Excel file")
+    parser.add_argument("--annotation_json_pattern",
+                        default="/dev-shared/binfei/data/MM_AU/CAP-DATA_chunks/chunk_*/annotations_*.json",
+                        help="Glob pattern for annotation JSON files")
     parser.add_argument("--video_base_path",
-                        default="/data02/home/binfei/workspace/ByteTrack/Vehicle_crash_image_tracking_updated_results",
+                        default="/dev-shared/binfei/data/MM_AU/CAP-DATA_chunks/tracking_visualization",
                         help="Base path to video directories")
-    parser.add_argument("--sam_crash_detection_path",
-                        default="/data02/home/binfei/workspace/Depth-Anything-V2/sam_crash_detection",
+    parser.add_argument("--rule_base_crash_detection_path",
+                        default="/dev-shared/binfei/data/MM_AU/CAP-DATA_chunks/rule_base_det_results/",
                         help="Path to SAM crash detection results")
-    parser.add_argument("--local_save_dir", default="~/data/car_crash",
+    parser.add_argument("--local_save_dir", default="/dev-shared/binfei/data/MM_AU/CAP-DATA_chunks/",
                         help="The save directory for the preprocessed dataset")
-    parser.add_argument("--fps", type=float, default=None,
-                        help="Sample video at specified FPS (e.g., 1.0 for 1 frame per second)")
-    parser.add_argument("--nframes", type=int, default=None,
+    parser.add_argument("--nframes", type=int, default=48,
                         help="Sample fixed number of frames (alternative to fps)")
-    parser.add_argument("--fps_min_frames", type=int, default=4,
-                        help="Minimum frames when using fps sampling")
-    parser.add_argument("--fps_max_frames", type=int, default=48,
-                        help="Maximum frames when using fps sampling")
-    parser.add_argument("--train_ratio", type=float, default=0.8,
+    parser.add_argument("--train_ratio", type=float, default=1.0,
                         help="Ratio of training data (rest will be validation)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for train/val split")
 
     args = parser.parse_args()
 
-    # Expand path
     args.local_save_dir = os.path.expanduser(args.local_save_dir)
 
-    # Read Excel annotation file
-    print(f"Loading annotations from {args.annotation_file}...")
-    df = pd.read_excel(args.annotation_file)
-    print(f"Loaded {len(df)} rows from Excel")
+    # Load all JSON annotation files
+    print(f"Loading annotations from {args.annotation_json_pattern}...")
+    json_files = glob(args.annotation_json_pattern)
+    print(f"Found {len(json_files)} JSON files")
 
-    # Prepare data list (filter valid samples)
+    all_annotations = {}
+    for json_file in json_files:
+        with open(json_file, 'r') as f:
+            data = json.load(f)
+            all_annotations.update(data)
+
+    print(f"Loaded {len(all_annotations)} total annotations from all JSON files")
+
+    # Filter by is_valid and prepare data list
     data_list = []
-    total_rows = 0
-    skipped_rows = 0
+    total_entries = len(all_annotations)
+    skipped_entries = 0
 
-    for idx, row in df.iterrows():
-        total_rows += 1
-
-        # Extract values
-        accident_type = str(row['accident_type']).strip()
-        obj_id = str(row['obj_id']).strip()
-
-        is_normal = accident_type in ["normal cases", "normal cases (hard)"]
-
-        # Check for missing or invalid data (skip only for accident cases)
-        if not is_normal and (not accident_type or accident_type.lower() == 'nan' or pd.isna(row['accident_type'])):
-            skipped_rows += 1
+    for idx, (video_key, annotation) in enumerate(all_annotations.items()):
+        if not annotation.get('is_valid', False):
+            skipped_entries += 1
             continue
 
-        if not is_normal and (not obj_id or obj_id.lower() == 'nan' or pd.isna(row['obj_id'])):
-            skipped_rows += 1
-            continue
+        video_subdir = os.path.dirname(video_key)
+        filename = os.path.basename(video_key)
 
-        if not is_normal and (pd.isna(row['ego_involved'])):
-            skipped_rows += 1
-            continue
+        # Convert obj_id list to semicolon-separated string
+        obj_id_list = annotation.get('obj_id', [])
+        obj_id_str = ';'.join(map(str, obj_id_list)) if obj_id_list else ""
 
-        # All checks passed, add to data list
-        type_val = int(row['type'])
-        video_val = int(row['video'])
-        ego_involved = bool(row['ego_involved']) if not is_normal else False
+        at_fault_list = annotation.get('at_fault', [])
+        at_fault_str = ';'.join(map(str, at_fault_list)) if at_fault_list else ""
 
-        # Frame information
-        start_frame = int(row['abnormal start frame'])
-        end_frame = int(row['abnormal end frame'])
+        # Extract frame numbers from filename (e.g., "10_1609_f37-90.mp4" -> 37, 90)
+        frame_part = filename.split('_f')[-1].replace('.mp4', '')
+        if '-' in frame_part:
+            start_frame, end_frame = map(int, frame_part.split('-'))
+        else:
+            start_frame = end_frame = 0
 
         data_list.append({
             'idx': idx,
-            'type': type_val,
-            'video': video_val,
-            'accident_type': accident_type,
-            'is_normal': is_normal,
-            'ego_involved': ego_involved,
-            'obj_id': obj_id if not is_normal else "",
+            'video_key': video_key,
+            'video_subdir': video_subdir,
+            'filename': filename,
+            'is_accident': annotation.get('is_accident', False),
+            'ego_involved': annotation.get('ego_involved', False),
+            'obj_id': obj_id_str,
+            'obj_id_list': obj_id_list,
+            'at_fault': at_fault_str,
+            'at_fault_list': at_fault_list,
+            'accident_type': annotation.get('accident_type', ''),
             'start_frame': start_frame,
             'end_frame': end_frame,
         })
 
-    print(f"Prepared {len(data_list)} valid samples from annotation file")
-    print(f"  Total rows in file: {total_rows}")
-    print(f"  Valid samples: {len(data_list)}")
-    print(f"  Skipped (missing data): {skipped_rows}")
+    print(f"Prepared {len(data_list)} valid samples from annotation files")
+    print(f"  Total entries: {total_entries}, Valid: {len(data_list)}, Skipped: {skipped_entries}")
 
-    # Random shuffle and split train/val
+    # Shuffle and split train/val
     random.seed(args.seed)
     random.shuffle(data_list)
 
@@ -265,24 +230,21 @@ if __name__ == "__main__":
     print(f"  Val samples: {len(val_list)}")
 
     def get_video_frame_count(video_path):
-        """Get the number of frames in a video file using torchvision"""
+        """Get the number of frames in a video file"""
         try:
-            # Use VideoReader to get metadata without loading the entire video
             from torchvision.io import VideoReader
             reader = VideoReader(video_path, "video")
             metadata = reader.get_metadata()
-            # Calculate frame count from duration and fps
             duration = metadata['video']['duration'][0]
             fps = metadata['video']['fps'][0]
             frame_count = int(duration * fps)
             return frame_count
-        except Exception as e:
-            # Fallback: load video to get frame count (slower but more reliable)
+        except Exception:
             try:
                 video, _, _ = io.read_video(video_path, pts_unit='sec')
                 return video.shape[0]
-            except Exception as e2:
-                print(f"Warning: Failed to get frame count for {video_path}: {e2}")
+            except Exception as e:
+                print(f"Warning: Failed to get frame count for {video_path}: {e}")
                 return None
 
     def process_split(split_list, split_name):
@@ -290,49 +252,39 @@ if __name__ == "__main__":
         processed_data = []
 
         for item in split_list:
-            # Construct video path
-            video_id = f"{item['type']}_{item['video']:03d}"
-            video_filename = f"{video_id}_f{item['start_frame']}-{item['end_frame']}.mp4"
-            video_path = os.path.join(args.video_base_path, video_id, video_filename)
+            video_path = os.path.join(args.video_base_path, item['video_subdir'], item['filename'])
 
-            # Check if video exists
             if not os.path.exists(video_path):
                 print(f"Warning: Video not found: {video_path}, skipping...")
                 continue
 
-            # Get video frame count
             frame_count = get_video_frame_count(video_path)
             if frame_count is None:
                 print(f"Warning: Could not determine frame count for {video_path}, skipping...")
                 continue
 
-            # Determine nframes: use actual frame count if < 48, otherwise cap at 48
-            nframes = min(frame_count, args.fps_max_frames)
+            # Align with qwen_vl_utils smart_nframes logic
+            # FRAME_FACTOR = 2, FPS_MIN_FRAMES = 4
+            nframes = min(frame_count, args.nframes)
+            nframes = max(nframes, 4)  # Ensure min_frames >= 4
+            nframes = (nframes // 2) * 2  # Floor to multiple of 2 (never exceed frame_count)            
 
-            # Load rule-based crash detection results
             rule_base_crash_results = load_rule_base_results(
-                args.sam_crash_detection_path,
-                item['type'],
-                item['video']
+                args.rule_base_crash_detection_path,
+                item['video_subdir']
             )
 
-            # Format user prompt with rule-based results
             user_prompt = USER_PROMPT_TEMPLATE.format(rule_base_crash_results=rule_base_crash_results)
 
-            # Construct video dict following qwen2-vl format
             video_dict = {
                 "type": "video",
                 "video": f"file://{video_path}",
                 "nframes": nframes
             }
 
-            # Determine is_accident (False for normal cases, True for accidents)
-            is_accident = not item['is_normal']
+            obj_id_groups = parse_obj_id_ground_truth(item['obj_id'])
+            at_fault_groups = parse_obj_id_ground_truth(item['at_fault'])
 
-            # Parse object IDs (empty for normal cases)
-            obj_id_groups = parse_obj_id_ground_truth(item['obj_id']) if not item['is_normal'] else []
-
-            # Construct data in verl format
             data = {
                 "data_source": "car_crash",
                 "prompt": [
@@ -344,17 +296,18 @@ if __name__ == "__main__":
                 "reward_model": {
                     "style": "rule",
                     "ground_truth": {
-                        "is_accident": is_accident,
+                        "is_accident": item['is_accident'],
                         "is_ego_involved": item['ego_involved'],
                         "obj_id_groups": obj_id_groups,
-                        "obj_id_str": item['obj_id']
+                        "obj_id_str": item['obj_id'],
+                        "at_fault_groups": at_fault_groups,
+                        "at_fault_str": item['at_fault']
                     }
                 },
                 "extra_info": {
                     "split": split_name,
                     "index": item['idx'],
-                    "type": item['type'],
-                    "video": item['video'],
+                    "video_key": item['video_key'],
                     "accident_type": item['accident_type'],
                     "video_path": video_path,
                     "start_frame": item['start_frame'],
@@ -365,7 +318,6 @@ if __name__ == "__main__":
 
         return processed_data
 
-    # Process train and val splits
     print("\nProcessing train split...")
     train_data = process_split(train_list, "train")
     print(f"Processed {len(train_data)} train samples")
@@ -374,19 +326,16 @@ if __name__ == "__main__":
     val_data = process_split(val_list, "val")
     print(f"Processed {len(val_data)} val samples")
 
-    # Convert to HuggingFace datasets
     train_dataset = datasets.Dataset.from_list(train_data)
     val_dataset = datasets.Dataset.from_list(val_data)
 
-    # Save to parquet
     os.makedirs(args.local_save_dir, exist_ok=True)
     train_dataset.to_parquet(os.path.join(args.local_save_dir, "train.parquet"))
     val_dataset.to_parquet(os.path.join(args.local_save_dir, "test.parquet"))
 
     print(f"\nDataset saved to {args.local_save_dir}")
-    print(f"Train samples: {len(train_dataset)}")
-    print(f"Val samples: {len(val_dataset)}")
+    print(f"  Train: {len(train_dataset)} samples")
+    print(f"  Val: {len(val_dataset)} samples")
 
-    # Example output format
     print("\nExample data format:")
     print(train_dataset[0])

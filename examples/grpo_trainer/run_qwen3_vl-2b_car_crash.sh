@@ -6,10 +6,11 @@ ENGINE=${1:-vllm}
 # Use GPU 5 which has most free memory
 export CUDA_VISIBLE_DEVICES=7
 
-HF_MODEL_PATH="/data02/home/binfei/.cache/huggingface/hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203"
+HF_MODEL_PATH="/dev-shared/binfei/.cache/huggingface/hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203"
 
-train_path=$HOME/data/car_crash/train.parquet
-test_path=$HOME/data/car_crash/test.parquet
+train_path=/dev-shared/binfei/data/MM_AU/CAP-DATA_chunks/train.parquet
+test_path=/dev-shared/binfei/data/MM_AU/CAP-DATA_chunks/test.parquet
+SAVE_DIR=/dev-shared/binfei/results/CarCrash/qwen3_vl_2b_test
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
@@ -49,6 +50,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name='qwen3_vl_2b_car_crash' \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
-    trainer.save_freq=5 \
+    trainer.save_freq=100 \
+    trainer.default_local_dir=$SAVE_DIR \
     trainer.test_freq=1 \
     trainer.total_epochs=10 $@

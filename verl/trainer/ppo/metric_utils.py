@@ -247,7 +247,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
 
         positive_mask = torch.zeros(len(batch), dtype=torch.bool, device=device)
         negative_mask = torch.zeros(len(batch), dtype=torch.bool, device=device)
-        
+
         for i, label in enumerate(is_accident_labels):
             if label is True:
                 positive_mask[i] = True
@@ -268,6 +268,20 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
             metrics.update({
                 "critic/rewards_negative/mean": torch.mean(negative_rewards).detach().item(),
             })
+
+    # Add precision/recall metrics from reward_extra_info
+    # These metrics are computed in the reward function (e.g., car_crash.py) and passed through reward_extra_info
+    for metric_name in ["precision", "recall", "at_fault_precision", "at_fault_recall"]:
+        if metric_name in batch.non_tensor_batch:
+            values = batch.non_tensor_batch[metric_name]
+            # Filter out None values (for at_fault metrics when gt is not available) and aborted samples
+            valid_values = []
+            for i in range(len(values)):
+                if non_aborted_mask[i] and values[i] is not None:
+                    valid_values.append(values[i])
+
+            if valid_values:
+                metrics[f"reward_metrics/{metric_name}/mean"] = np.mean(valid_values)
 
     return metrics
 

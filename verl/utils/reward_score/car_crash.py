@@ -226,5 +226,11 @@ def compute_score(predict_str: str, ground_truth: dict | str) -> float:
 
     print(f"reward: {reward}")
 
-
-    return reward
+    # Return dict with all metrics for tensorboard logging
+    return {
+        'score': reward,  # Main reward value
+        'precision': precision,
+        'recall': recall,
+        'at_fault_precision': at_fault_precision if len(gt_at_fault_groups) != 0 else None,
+        'at_fault_recall': at_fault_recall if len(gt_at_fault_groups) != 0 else None,
+    }

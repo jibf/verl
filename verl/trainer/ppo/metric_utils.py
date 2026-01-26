@@ -101,6 +101,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
             - response_length/mean, max, min, clip_ratio: Statistics about response lengths
             - prompt_length/mean, max, min, clip_ratio: Statistics about prompt lengths
             - num_turns/mean, max, min: Statistics about the number of multi-turn conversations
+            - critic/pass_at_n: Pass@n metric based on reward > 0 (for GRPO with multiple samples)
     """
     sequence_score = batch.batch["token_level_scores"].sum(-1)
     sequence_reward = batch.batch["token_level_rewards"].sum(-1)
@@ -132,6 +133,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
     reward_mean = torch.mean(non_aborted_sequence_reward).detach().item()
     reward_max = torch.max(non_aborted_sequence_reward).detach().item()
     reward_min = torch.min(non_aborted_sequence_reward).detach().item()
+    pass_at_n = (torch.sum(non_aborted_sequence_reward > 0) / non_aborted_sequence_reward.size(0)).detach().item()
 
     valid_adv = torch.masked_select(advantages, response_mask)
     valid_returns = torch.masked_select(returns, response_mask)
@@ -166,6 +168,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "critic/rewards/mean": reward_mean,
         "critic/rewards/max": reward_max,
         "critic/rewards/min": reward_min,
+        "critic/rewards/pass@n": pass_at_n,
         # adv
         "critic/advantages/mean": torch.mean(valid_adv).detach().item(),
         "critic/advantages/max": torch.max(valid_adv).detach().item(),
@@ -193,12 +196,18 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "response_length/clip_ratio": torch.mean(torch.eq(response_length, max_response_length).float())
         .detach()
         .item(),
+        # response length distribution (tensor for histogram)
+        # "response_length/distribution": response_length.detach().cpu(),  # Commented out - using p95 scalar instead
+        "response_length/p95": torch.quantile(response_length.float(), 0.95).detach().item(),
         # response length (non-aborted only)
         # These statistics exclude aborted samples to avoid skew from zeros
         "response_length_non_aborted/mean": non_aborted_response_length_mean,
         "response_length_non_aborted/max": non_aborted_response_length_max,
         "response_length_non_aborted/min": non_aborted_response_length_min,
         "response_length_non_aborted/clip_ratio": non_aborted_response_length_clip_ratio,
+        # response length distribution (non-aborted, tensor for histogram)
+        # "response_length_non_aborted/distribution": non_aborted_response_length.detach().cpu(),  # Commented out - using p95 scalar instead
+        "response_length_non_aborted/p95": torch.quantile(non_aborted_response_length.float(), 0.95).detach().item(),
         # aborted ratio
         # Fraction of samples whose response length is zero
         "response/aborted_ratio": aborted_ratio,
@@ -221,6 +230,44 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         metrics["tool_call_counts/min"] = tool_call_counts.min()
         metrics["tool_call_counts/max"] = tool_call_counts.max()
         metrics["tool_call_counts/mean"] = tool_call_counts.mean()
+    
+    if "reward_model" in batch.non_tensor_batch:
+        reward_model_data = batch.non_tensor_batch["reward_model"]
+
+        is_accident_labels = []
+        for i in range(len(batch)):
+            gt_dict = reward_model_data[i]
+            if isinstance(gt_dict, dict) and "ground_truth" in gt_dict:
+                is_accident = gt_dict["ground_truth"].get("is_accident", None)
+            else:
+                is_accident = None
+            is_accident_labels.append(is_accident)
+
+        device = sequence_reward.device
+
+        positive_mask = torch.zeros(len(batch), dtype=torch.bool, device=device)
+        negative_mask = torch.zeros(len(batch), dtype=torch.bool, device=device)
+        
+        for i, label in enumerate(is_accident_labels):
+            if label is True:
+                positive_mask[i] = True
+            elif label is False:
+                negative_mask[i] = True
+
+        positive_mask = positive_mask & non_aborted_mask
+        negative_mask = negative_mask & non_aborted_mask
+
+        if positive_mask.sum() > 0:
+            positive_rewards = sequence_reward[positive_mask]
+            metrics.update({
+                "critic/rewards_positive/mean": torch.mean(positive_rewards).detach().item(),
+            })
+
+        if negative_mask.sum() > 0:
+            negative_rewards = sequence_reward[negative_mask]
+            metrics.update({
+                "critic/rewards_negative/mean": torch.mean(negative_rewards).detach().item(),
+            })
 
     return metrics
 

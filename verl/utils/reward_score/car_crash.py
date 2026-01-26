@@ -178,19 +178,37 @@ def compute_score(predict_str: str, ground_truth: dict | str) -> float:
             ground_truth = json.loads(ground_truth)
         except:
             print(f"Warning: Failed to parse ground_truth string: {ground_truth[:100]}")
-            return 0.0
+            return {
+                'score': 0.0,
+                'precision': 0.0,
+                'recall': 0.0,
+                'at_fault_precision': None,
+                'at_fault_recall': None,
+            }
 
     # Parse prediction
     try:
         pred = parse_json_response(predict_str)
     except Exception as e:
         print(f"Error parsing prediction: {e}")
-        return -1.0
+        return {
+            'score': -1.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'at_fault_precision': None,
+            'at_fault_recall': None,
+        }
 
     # Check if parsing failed
     if pred.get('parse_failed', False):
         print(f"JSON parsing failed, returning penalty reward: -1.0")
-        return -1.0
+        return {
+            'score': -1.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'at_fault_precision': None,
+            'at_fault_recall': None,
+        }
 
     # Extract GT values
     gt_is_accident = ground_truth.get('is_accident', True)  # Default to True for backward compatibility

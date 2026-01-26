@@ -337,6 +337,10 @@ class RayPPOTrainer:
 
         num_workers = self.config.data["dataloader_num_workers"]
 
+        # Prefetch and persistent workers configuration for better performance
+        prefetch_factor = self.config.data.get("prefetch_factor", 4 if num_workers > 0 else None)
+        persistent_workers = self.config.data.get("persistent_workers", True if num_workers > 0 else False)
+
         self.train_dataloader = StatefulDataLoader(
             dataset=self.train_dataset,
             batch_size=self.config.data.get("gen_batch_size", self.config.data.train_batch_size),
@@ -344,6 +348,8 @@ class RayPPOTrainer:
             drop_last=True,
             collate_fn=collate_fn,
             sampler=train_sampler,
+            prefetch_factor=prefetch_factor,
+            persistent_workers=persistent_workers,
         )
 
         val_batch_size = self.config.data.val_batch_size  # Prefer config value if set
@@ -357,6 +363,8 @@ class RayPPOTrainer:
             shuffle=self.config.data.get("validation_shuffle", True),
             drop_last=False,
             collate_fn=collate_fn,
+            prefetch_factor=prefetch_factor,
+            persistent_workers=persistent_workers,
         )
 
         assert len(self.train_dataloader) >= 1, "Train dataloader is empty!"
@@ -412,6 +420,69 @@ class RayPPOTrainer:
             f.write("\n".join(lines) + "\n")
 
         print(f"Dumped generations to {filename}")
+
+    def _log_rollout_responses(
+        self, batch: DataProto, rollout_responses_dir: str, timing_raw: dict
+    ):
+        """Log all n responses for each prompt to a separate file.
+
+        This logs the raw model outputs for each prompt, grouped by uid.
+        For GRPO with n=8, each prompt will have 8 responses saved.
+
+        Args:
+            batch (DataProto): The batch containing rollout data (already repeated n times)
+            rollout_responses_dir (str): Directory path to save the rollout responses
+            timing_raw (dict): Timing information for profiling
+        """
+        with marked_timer("dump_rollout_responses", timing_raw, color="purple"):
+            os.makedirs(rollout_responses_dir, exist_ok=True)
+            filename = os.path.join(rollout_responses_dir, f"responses_step_{self.global_steps}.jsonl")
+
+            # Decode all prompts and responses
+            prompts = self.tokenizer.batch_decode(batch.batch["prompts"], skip_special_tokens=True)
+            responses = self.tokenizer.batch_decode(batch.batch["responses"], skip_special_tokens=True)
+            scores = batch.batch["token_level_scores"].sum(-1).cpu().tolist()
+
+            # Group by uid (each uid represents a unique prompt)
+            if "uid" not in batch.non_tensor_batch:
+                print("Warning: uid not found in batch, cannot group responses by prompt")
+                return
+
+            uids = batch.non_tensor_batch["uid"]
+
+            # Get ground truth if available
+            sample_gts = [item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in batch]
+
+            # Group data by uid
+            uid_to_data = defaultdict(lambda: {"prompt": None, "responses": [], "scores": [], "gt": None})
+            for i, uid in enumerate(uids):
+                if uid_to_data[uid]["prompt"] is None:
+                    uid_to_data[uid]["prompt"] = prompts[i]
+                    uid_to_data[uid]["gt"] = sample_gts[i]
+                uid_to_data[uid]["responses"].append(responses[i])
+                uid_to_data[uid]["scores"].append(scores[i])
+
+            # Write to file
+            with open(filename, "w") as f:
+                for uid, data in uid_to_data.items():
+                    entry = {
+                        "uid": uid,
+                        "step": self.global_steps,
+                        "prompt": data["prompt"],
+                        "ground_truth": data["gt"],
+                        "num_responses": len(data["responses"]),
+                        "responses": [
+                            {
+                                "response_idx": idx,
+                                "text": resp,
+                                "score": score
+                            }
+                            for idx, (resp, score) in enumerate(zip(data["responses"], data["scores"], strict=True))
+                        ]
+                    }
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+            print(f"Saved {len(uid_to_data)} prompts with their responses to {filename}")
 
     def _log_rollout_data(
         self, batch: DataProto, reward_extra_infos_dict: dict, timing_raw: dict, rollout_data_dir: str
@@ -505,7 +576,9 @@ class RayPPOTrainer:
         sample_turns = []
         sample_uids = []
 
-        for test_data in self.val_dataloader:
+        print(f"\n[DEBUG VALIDATION] Starting validation, iterating over val_dataloader...")
+        for val_batch_idx, test_data in enumerate(self.val_dataloader):
+            print(f"[DEBUG VALIDATION] Loading validation batch {val_batch_idx+1}")
             test_batch = DataProto.from_single_dict(test_data)
 
             if "uid" not in test_batch.non_tensor_batch:
@@ -643,6 +716,7 @@ class RayPPOTrainer:
             metric_dict["val-aux/num_turns/max"] = sample_turns.max()
             metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
 
+        print(f"[DEBUG VALIDATION] Validation completed! Returning metrics.")
         return metric_dict
 
     def _merge_validation_results(self, result_a, result_b):
@@ -1299,6 +1373,7 @@ class RayPPOTrainer:
                 gen_batch_output = gen_batch.repeat(
                     repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
                 )
+                print(f"[DEBUG] Repeated batch {self.config.actor_rollout_ref.rollout.n} times for GRPO")
 
                 is_last_step = self.global_steps >= self.total_training_steps
                 with marked_timer("step", timing_raw):
@@ -1528,14 +1603,25 @@ class RayPPOTrainer:
                     if rollout_data_dir:
                         self._log_rollout_data(batch, reward_extra_infos_dict, timing_raw, rollout_data_dir)
 
+                    # Log all rollout responses (n responses per prompt) if enabled
+                    rollout_responses_dir = self.config.trainer.get("rollout_responses_dir", None)
+                    if rollout_responses_dir:
+                        self._log_rollout_responses(batch, rollout_responses_dir, timing_raw)
+
                 # validate
                 if self.config.trainer.test_freq > 0 and (
                     is_last_step or self.global_steps % self.config.trainer.test_freq == 0
                 ):
+                    print(f"\n{'*'*80}")
+                    print(f"[DEBUG] Running validation at step {self.global_steps}")
+                    print(f"{'*'*80}\n")
                     with marked_timer("testing", timing_raw, color="green"):
                         val_metrics: dict = self._validate()
                         if is_last_step:
                             last_val_metrics = val_metrics
+                    print(f"\n{'*'*80}")
+                    print(f"[DEBUG] Validation completed at step {self.global_steps}")
+                    print(f"{'*'*80}\n")
                     metrics.update(val_metrics)
 
                 with marked_timer("stop_profile", timing_raw):

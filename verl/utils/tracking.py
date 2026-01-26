@@ -267,8 +267,15 @@ class _TensorboardAdapter:
         self.writer = SummaryWriter(tensorboard_dir)
 
     def log(self, data, step):
+        import torch
+
         for key in data:
-            self.writer.add_scalar(key, data[key], step)
+            value = data[key]
+            # Check if the value is a tensor or array that should be logged as histogram
+            if isinstance(value, torch.Tensor) and value.dim() >= 1:
+                self.writer.add_histogram(key, value, step)
+            else:
+                self.writer.add_scalar(key, value, step)
 
     def finish(self):
         self.writer.close()

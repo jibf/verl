@@ -24,6 +24,7 @@ The function parses JSON predictions and compares with ground truth.
 
 import json
 import re
+import logging
 
 
 def parse_json_response(response: str) -> dict[str, any]:
@@ -76,7 +77,9 @@ def parse_json_response(response: str) -> dict[str, any]:
             'is_accident': parsed.get('is_accident', False),
             'is_ego_involved': parsed.get('is_ego_involved', False),
             'object_id_involved': parsed.get('object_id_involved', []),
-            'analysis': parsed.get('accident analysis', parsed.get('analysis', ''))
+            'object_id_at_fault': parsed.get('object_id_at_fault', []),
+            'analysis': parsed.get('accident analysis', parsed.get('analysis', '')),
+            'parse_failed': False
         }
     except Exception as e:
         # Return default values if parsing fails
@@ -86,7 +89,9 @@ def parse_json_response(response: str) -> dict[str, any]:
             'is_accident': False,
             'is_ego_involved': False,
             'object_id_involved': [],
-            'analysis': ''
+            'object_id_at_fault': [],
+            'analysis': '',
+            'parse_failed': True
         }
 
 
@@ -129,6 +134,9 @@ def evaluate_object_ids(pred_ids: list[int], gt_groups: list[list[int]]) -> dict
     # Note: Empty predictions should give precision=0 (not 1.0) to avoid gaming the metric
     precision = tp / num_preds if num_preds > 0 else 0.0
     recall = matched_groups / num_gt_groups if num_gt_groups > 0 else 0.0
+    if num_gt_groups == 0 and num_preds == 0:
+        precision = 1.0
+        recall = 1.0
 
     return {
         'precision': precision,
@@ -177,15 +185,21 @@ def compute_score(predict_str: str, ground_truth: dict | str) -> float:
         pred = parse_json_response(predict_str)
     except Exception as e:
         print(f"Error parsing prediction: {e}")
-        return 0.0
+        return -1.0
+
+    # Check if parsing failed
+    if pred.get('parse_failed', False):
+        print(f"JSON parsing failed, returning penalty reward: -1.0")
+        return -1.0
 
     # Extract GT values
     gt_is_accident = ground_truth.get('is_accident', True)  # Default to True for backward compatibility
     gt_is_ego = ground_truth.get('is_ego_involved', False)
+    gt_at_fault_groups = ground_truth.get('at_fault_groups', [])
     gt_obj_id_groups = ground_truth.get('obj_id_groups', [])
 
     # Compute is_accident accuracy # if not match, set reward as 0
-    is_accident_correct = 1.0 if pred['is_accident'] == gt_is_accident else 0.0
+    is_accident_correct = 1.0 if pred['is_accident'] == gt_is_accident else -1.0
 
     # # Compute is_ego_involved accuracy
     # is_ego_correct = 1.0 if pred['is_ego_involved'] == gt_is_ego else 0.0
@@ -195,9 +209,22 @@ def compute_score(predict_str: str, ground_truth: dict | str) -> float:
     precision = obj_metrics['precision']
     recall = obj_metrics['recall']
 
+    at_fault_mmetrics = evaluate_object_ids(pred['object_id_at_fault'], gt_at_fault_groups)
+    at_fault_precision = at_fault_mmetrics['precision']
+    at_fault_recall = at_fault_mmetrics['recall']
+
     # at_fault_accuracy
 
-    # Compute final reward (equal weights for all 4 metrics)
-    reward = (is_accident_correct + precision + recall) / 4.0
+    # Compute final reward (equal weights for all 3 metrics)
+    if is_accident_correct < 0:
+        reward = -1.0
+    elif len(gt_at_fault_groups) != 0:
+        reward = (precision + recall + at_fault_precision + at_fault_recall) / 4.0
+    else:
+        reward = (precision + recall) / 2.0
+    # reward = is_accident_correct
+
+    print(f"reward: {reward}")
+
 
     return reward

@@ -213,7 +213,8 @@ def compute_score(predict_str: str, ground_truth: dict | str) -> float:
     # Extract GT values
     gt_is_accident = ground_truth.get('is_accident', True)  # Default to True for backward compatibility
     gt_is_ego = ground_truth.get('is_ego_involved', False)
-    gt_at_fault_groups = ground_truth.get('at_fault_groups', [])
+    # gt_at_fault_groups = ground_truth.get('at_fault_groups', [])
+    gt_at_fault_groups = []
     gt_obj_id_groups = ground_truth.get('obj_id_groups', [])
 
     # Compute is_accident accuracy # if not match, set reward as 0
@@ -230,6 +231,7 @@ def compute_score(predict_str: str, ground_truth: dict | str) -> float:
     at_fault_mmetrics = evaluate_object_ids(pred['object_id_at_fault'], gt_at_fault_groups)
     at_fault_precision = at_fault_mmetrics['precision']
     at_fault_recall = at_fault_mmetrics['recall']
+
 
     # at_fault_accuracy
 

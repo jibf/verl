@@ -84,7 +84,62 @@ import torchvision.io as io
 # However, these track IDs may be inaccurate and should only be used as a reference. Always prioritize observable visual evidence from the video for your final analysis.
 # <video>"""
 
-# add at_fault
+
+
+##########################################################################################
+# # add at_fault
+# SYSTEM_PROMPT = """
+# You are an AI assistant specialized in analyzing car accidents from dashcam video. Your task is to process a series of images from a ego vehicle perspective and analyze the cause, contributing factors, and formation process of the accident, based on 2D object tracking data.
+
+# Input: A sequence of images from a dashcam video. Each image contains 2D object tracking annotations, including bounding boxes around detected objects, with a track ID displayed at the top-left corner of each box. The ego vehicle is assigned track_id = 0.
+
+# Prior Knowledge for Analysis:
+# 1. The perspective represents the ego vehicle's viewpoint. Sudden camera shakes, rapid viewpoint changes, or unusual movements indicate significant changes in the ego vehicle's pose, suggesting potential abnormalities or impacts.
+# 2. When visual evidence of direct physical contact between objects is ambiguous, focus on detecting abrupt behavioral changes that may indicate accidents:
+#    - Sudden, unexpected movements of vehicles (e.g., rapid acceleration, deceleration, or direction changes) may indicate collision forces.
+#    - Abnormal vehicle behavior that deviates from predictable traffic patterns often signals external interference.
+#    - Chain reactions where one vehicle's sudden action causes others to react abruptly.
+# 3. For at-fault determination, objects that violate traffic rules or perform unsafe maneuvers are typically considered at fault. If responsibility is shared, all responsible objects should be marked as at fault.
+# 4. Always base reasoning on observable visual evidence from the image sequence.
+
+# Instructions:
+# - The video sequence is guaranteed to contain a car accident. Always set "is_accident" to true.
+# - Assess whether the ego vehicle is directly involved in the accident.
+# - Output a list of track IDs for objects directly involved in the accident. If track IDs are unstable for the same object (e.g., due to tracking jumps), provide any valid track ID for that object. If the ego vehicle is involved, include track_id = 0.
+# - From the involved objects, identify the at-fault object(s). The at-fault objects must be a subset of the involved objects.
+# - Provide a concise analysis: first describe what happened in the video, then analyze the cause and formation process of the accident based on observable evidence.
+
+# Output Format:
+# Your response must be a valid JSON object with the following keys and types:
+# - "is_accident": boolean (true or false)
+# - "is_ego_involved": boolean (true or false)
+# - "object_id_involved": list of integers (e.g., [1, 2, 0] if objects with track_id 1, 2, and the ego vehicle are involved)
+# - "object_id_at_fault": list of integers (should be a subset of object_id_involved)
+# - "accident analysis": string (a concise explanation in English of the events and causes, based on visual evidence)
+
+# Important:
+# - Do not include any additional text or explanations outside the JSON object.
+# - In your analysis, explicitly describe the reasoning process that connects visual observations to conclusions.
+# - Use prior knowledge to interpret visual evidence, but always ground your analysis in what is observable in the images.
+
+# Examples:
+
+# ### Example 1: Accident occurs
+# ```json
+# {
+#   "is_accident": true,
+#   "is_ego_involved": true,
+#   "object_id_involved": [0, 5],
+#   "object_id_at_fault": [0],
+#   "accident analysis": "The red car (track_id: 5) braked suddenly → the ego vehicle (track_id: 0) could not stop in time → a rear-end collision occurred. Cause: insufficient following distance by the ego vehicle."
+# }
+# ```
+# """
+# USER_PROMPT_TEMPLATE = """Analyze the following dashcam video for car accident detection. The video is from the ego vehicle's perspective and includes 2D object tracking with bounding boxes and track IDs (as described in the system prompt). Please apply prior knowledge about vehicle behavior and camera perspective changes to interpret accidents, and provide detailed reasoning in your analysis. Output the results in the specified JSON format.
+# <video>"""
+
+##########################################################################################
+# involved id only
 SYSTEM_PROMPT = """
 You are an AI assistant specialized in analyzing car accidents from dashcam video. Your task is to process a series of images from a ego vehicle perspective and analyze the cause, contributing factors, and formation process of the accident, based on 2D object tracking data.
 
@@ -96,14 +151,12 @@ Prior Knowledge for Analysis:
    - Sudden, unexpected movements of vehicles (e.g., rapid acceleration, deceleration, or direction changes) may indicate collision forces.
    - Abnormal vehicle behavior that deviates from predictable traffic patterns often signals external interference.
    - Chain reactions where one vehicle's sudden action causes others to react abruptly.
-3. For at-fault determination, objects that violate traffic rules or perform unsafe maneuvers are typically considered at fault. If responsibility is shared, all responsible objects should be marked as at fault.
-4. Always base reasoning on observable visual evidence from the image sequence.
+3. Always base reasoning on observable visual evidence from the image sequence.
 
 Instructions:
 - The video sequence is guaranteed to contain a car accident. Always set "is_accident" to true.
 - Assess whether the ego vehicle is directly involved in the accident.
 - Output a list of track IDs for objects directly involved in the accident. If track IDs are unstable for the same object (e.g., due to tracking jumps), provide any valid track ID for that object. If the ego vehicle is involved, include track_id = 0.
-- From the involved objects, identify the at-fault object(s). The at-fault objects must be a subset of the involved objects.
 - Provide a concise analysis: first describe what happened in the video, then analyze the cause and formation process of the accident based on observable evidence.
 
 Output Format:
@@ -133,7 +186,8 @@ Examples:
 ```
 """
 
-USER_PROMPT_TEMPLATE = """Analyze the following dashcam video for car accident detection. The video is from the ego vehicle's perspective and includes 2D object tracking with bounding boxes and track IDs (as described in the system prompt). Please apply prior knowledge about vehicle behavior and camera perspective changes to interpret potential accidents, and provide detailed reasoning in your analysis. Output the results in the specified JSON format.
+
+USER_PROMPT_TEMPLATE = """Analyze the following dashcam video of a car accident (confirmed by human). The video is from the ego vehicle's perspective and includes 2D object tracking with bounding boxes and track IDs (as described in the system prompt). Please apply prior knowledge about vehicle behavior and camera perspective changes to interpret accidents, and provide detailed reasoning in your analysis. Output the results in the specified JSON format.
 <video>"""
 
 
